@@ -234,8 +234,14 @@ class NoisyFlowMLP(nn.Module):
         self.device=device
         self.policy:FlowMLP = policy.to(self.device)
         """
-        input:  [batchsize, time_dim + cond_enc_dim]
-        output: positive tensor of shape [batchsize, self.denoising_steps, self.horizon_steps x self.act_dim]
+        功能说明：
+            在基础 `FlowMLP` 策略上增加“探索噪声头”，用于为每个去噪步生成动作维度级别的标准差。
+        输入特征（用于噪声网络）：
+            [batchsize, time_embedding + cond_embedding] 或 [batchsize, cond_embedding]
+            具体取决于是否启用时间相关噪声。
+        输出：
+            正值张量，形状为 [batchsize, self.horizon_steps * self.action_dim]，
+            表示当前 step 下每个动作维度的噪声标准差。
         """
         
         self.denoising_steps: int = denoising_steps
@@ -255,6 +261,15 @@ class NoisyFlowMLP(nn.Module):
         self.init_exploration_noise_net()
         
     def init_exploration_noise_net(self):
+        """
+        初始化探索噪声网络。
+
+        设计思路：
+            1) 时间无关噪声：仅使用状态条件嵌入 `cond_emb` 预测噪声。
+            2) 时间相关噪声：使用时间特征 + 状态条件嵌入联合预测噪声。
+               - 若 `learn_explore_time_embedding=True`，使用可学习离散 step embedding；
+               - 否则复用策略网络的连续时间 embedding（并在后续 forward 中 detach）。
+        """
         if self.use_time_independent_noise:
             noise_input_dim = self.policy.cond_enc_dim
             if not self.noise_hidden_dims:
@@ -270,6 +285,7 @@ class NoisyFlowMLP(nn.Module):
                 if not self.noise_hidden_dims:
                     self.noise_hidden_dims = [int(np.sqrt(noise_input_dim**2 + self.policy.act_dim_total**2))]
         
+        # 输出维度与动作总维度一致：每个动作维度对应一个噪声标准差。
         self.explore_noise_net=ExploreNoiseNet(in_dim=noise_input_dim, 
                                                 out_dim=self.policy.act_dim_total,
                                                 logprob_denoising_std_range=[self.min_logprob_denoising_std, self.max_logprob_denoising_std], 
@@ -287,35 +303,47 @@ class NoisyFlowMLP(nn.Module):
         **kwargs,
     )->Tuple[Tensor, Tensor]:
         """
-        inputs:
-            x: (B, Ta, Da)
-            time: (B,) floating point in [0,1) flow matching time
-            cond: dict with key state/rgb; more recent obs at the end
+        输入：
+            action: (B, Ta, Da)
+            time: (B,) 取值在 [0,1) 的 flow matching 时间
+            cond: 包含状态条件的字典（更近的观测在后）
                 state: (B, To, Do)
-            step: (B,) torch.tensor, optional, flow matching inference step, from 0 to denoising_steps-1
-            *here, B is the n_envs
-        outputs:
-             vel                [B, Ta, Da]
-             noise_std          [B, Ta x Da]
+            step: 当前去噪步（通常为 0 ~ denoising_steps-1）
+            其中 B 一般对应并行环境数 n_envs。
+
+        输出：
+            vel: [B, Ta, Da]，策略网络预测的速度场
+            noise_std: [B, Ta x Da]，当前 step 的探索噪声标准差
+
+        逻辑：
+            1) 先由 `policy` 输出速度 `vel` 及中间嵌入；
+            2) 当处于固定噪声阶段时，直接读取 `self.logprob_noise_levels`；
+            3) 进入可学习阶段后，使用 `explore_noise_net` 预测噪声标准差。
         """
-        B = action.shape[0]
+        B = action.shape[0]     # 获取batch size
+        # 使用原始策略网络输出速度场、时间嵌入和条件嵌入
         vel, time_emb, cond_emb = self.policy.forward(action, time, cond, output_embedding=True)
         
-        # noise head (for exploration). allow gradient flow.
+        # 探索噪声头：用于给动作采样/对数概率计算提供 step 相关或状态相关噪声。
+        # 决定当前 step 的噪声是“固定的”还是“可学习的”
         if self.initial_noise_scheduler_type=='const' or step < self.learn_explore_noise_from:
+            # 训练前段或固定调度：使用预设噪声水平（不经过噪声网络）。
             noise_std       = self.logprob_noise_levels[:, step].repeat(B,1)
         else:
             if self.use_time_independent_noise:
+                # 时间无关噪声：仅条件于状态嵌入。
                 noise_feature    = cond_emb
             else:
-                if self.learn_explore_time_embedding:
+                if self.learn_explore_time_embedding:   # 时间相关 + 可学习 step embedding
+                    # 使用可学习的离散 step embedding。
                     step_ts = torch.tensor(step, device = self.device).repeat(B)
                     time_emb_explore = self.time_embedding_explore(step_ts)
                     noise_feature    = torch.cat([time_emb_explore, cond_emb], dim=-1)
-                else:
+                else:   # 时间相关 + 复用 policy 时间 embedding
+                    # 复用策略时间嵌入并 detach，避免噪声学习反向影响策略时间编码。
                     noise_feature    = torch.cat([time_emb.detach(), cond_emb], dim=-1)
             
-            noise_std = self.explore_noise_net.forward(noise_feature=noise_feature)
+            noise_std = self.explore_noise_net.forward(noise_feature=noise_feature)     # 噪声网络输出 std
             
             if verbose:
                 log.info(f"step={step}, learnable noise = {noise_std.mean()}")
@@ -323,10 +351,15 @@ class NoisyFlowMLP(nn.Module):
         if verbose:
             log.info(f"step={step}, set to learn from {self.learn_explore_noise_from}, will learn exploration noise ? {step >= self.learn_explore_noise_from}, noise_std={noise_std.mean()}require_grad={noise_std.requires_grad}")
         
+        # 若不需要学习探索噪声，则在此处 detach，避免该分支参与梯度更新。
         return vel, noise_std if learn_exploration_noise else noise_std.detach()
 
     @torch.no_grad()
     def stochastic_interpolate(self,t):
+        """
+        根据初始噪声调度策略，为给定时间 t 生成默认噪声标准差。
+        返回值会在 `set_logprob_noise_levels` 中再进行上下界裁剪。
+        """
         valid_noise_schedulers=['vp', 'lin', 'const', 'const_schedule_itr', 'learn_decay']
         if self.initial_noise_scheduler_type == 'vp':
             a = 0.2 #2.0
@@ -344,8 +377,16 @@ class NoisyFlowMLP(nn.Module):
     @torch.no_grad()
     def set_logprob_noise_levels(self, force_level=None, verbose=False):
         '''
-        create noise std for logrporbability calcualion. 
-        generate a tensor `self.logprob_noise_levels` of shape `[1, self.denoising_steps,  self.policy.horizion_steps x self.policy.act_dim]`
+        为对数概率计算构建每个去噪 step 的噪声标准差表。
+
+        生成张量：
+            `self.logprob_noise_levels`
+            形状 `[1, self.denoising_steps, self.policy.horizon_steps * self.policy.action_dim]`
+
+        说明：
+            - 当 `force_level` 不为空时，所有 step 使用同一噪声水平；
+            - 否则按 `stochastic_interpolate(t)` 逐步生成；
+            - 最后统一裁剪到 [min_logprob_denoising_std, max_logprob_denoising_std]。
         '''
         self.logprob_noise_levels = torch.zeros(self.denoising_steps, device=self.device, requires_grad=False)
         

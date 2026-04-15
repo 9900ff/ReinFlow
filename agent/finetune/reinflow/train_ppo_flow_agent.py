@@ -1,28 +1,22 @@
-# MIT License
+# MIT 许可证
 
-# Copyright (c) 2025 ReinFlow Authors
+# 版权所有 (c) 2025 ReinFlow Authors
 
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
+# 特此免费授予任何获得本软件及相关文档文件（以下简称“软件”）副本的人，
+# 不受限制地处理本软件的权利，包括但不限于使用、复制、修改、合并、发布、
+# 分发、再许可和/或销售本软件副本的权利，并允许向其提供本软件的人这样做，
+# 但须符合以下条件：
 
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
+# 上述版权声明和本许可声明应包含在本软件的所有副本或主要部分中。
 
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# 本软件按“原样”提供，不提供任何明示或暗示担保，包括但不限于适销性、
+# 特定用途适用性和不侵权担保。无论在合同诉讼、侵权诉讼或其他诉讼中，
+# 对于因本软件或本软件的使用或其他处理而产生、由此引发或与之相关的
+# 任何索赔、损害或其他责任，作者或版权持有人均不承担责任。
 
 
 """
-fine-tuning.
+微调训练。
 """
 import os
 import logging
@@ -35,27 +29,27 @@ from model.flow.ft_ppo.ppoflow import PPOFlow
 from agent.finetune.reinflow.buffer import PPOFlowBuffer#, PPOFlowBufferGPU
 from util.scheduler_simple import get_scheduler
 import matplotlib.pyplot as plt
-# define buffer on cpu or cuda. Currently GPU version is not offering significant acceleration...
-# communication could be a bottleneck, it now just increases GPU volatile utilization from 7% to 13%
-# this could own to mujoco generating data on cpu and we frequently moves them to and from GPUs. 
+# 可在 CPU 或 CUDA 上定义 buffer。当前 GPU 版本加速效果不明显...
+# 通信可能是瓶颈，目前仅将 GPU 瞬时利用率从 7% 提升到 13%
+# 这可能是因为 mujoco 在 CPU 上产数据，而我们频繁在 CPU/GPU 间搬运数据。
 
 
-# this script works for both pretrained 1-ReFlow and ShortCutFlows.
+# 该脚本同时适用于预训练 1-ReFlow 与 ShortCutFlows。
 
 
 
 class TrainPPOFlowAgent(TrainPPOAgent):
     def __init__(self, cfg):
         super().__init__(cfg)
-        # Reward horizon --- always set to act_steps for now
+        # 奖励时域：当前默认始终设为 act_steps
         self.skip_initial_eval=cfg.get('skip_initial_eval', False)
         self.reward_horizon = cfg.get("reward_horizon", self.act_steps)
         self.inference_steps = self.model.inference_steps
         self.ft_denoising_steps = self.model.ft_denoising_steps
         self.repeat_samples = cfg.train.get("repeat_samples", False)
         
-        self.normalize_act_space_dim = True   # normalize entropy and logprobability over horizon steps and action dimension. so that we don't need to adjust entropy coeff when env scales up. 
-        self.normalize_denoising_horizon = True     # normalize denoising horizon when calculating the logprob of the markov chain of a single simulated action. 
+        self.normalize_act_space_dim = True   # 在时域步和动作维上归一化熵与 logprob，环境规模增大时无需额外调整熵系数。
+        self.normalize_denoising_horizon = True     # 计算单次模拟动作对应马尔可夫链 logprob 时，对去噪时域做归一化。
         self.lr_schedule = cfg.train.lr_schedule
         self.clip_intermediate_actions = cfg.train.get("clip_intermediate_actions", True)
         self.account_for_initial_stochasticity = cfg.train.get('account_for_initial_stochasticity', True)
@@ -70,7 +64,7 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             self.explore_noise_scheduler = get_scheduler(schedule_type='cosine_warmup',
                                                             min=0.016,
                                                             warmup_steps=self.n_train_itr * 0.01,
-                                                            max=0.08, #0.15,
+                                                            max=0.08, # 0.15,
                                                             hold_steps=self.n_train_itr * 0.29,
                                                             anneal_steps=self.n_train_itr * 0.7)
             
@@ -86,9 +80,9 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             min_std=cfg.model.min_logprob_denoising_std
             self.max_noise_decay_ratio=cfg.train.get('max_noise_decay_ratio', 0.7)
             max_std_decayed=min_std*(1-self.max_noise_decay_ratio)+max_std*self.max_noise_decay_ratio
-            # min_std*0.20+max_std*0.80 
-            # min_std*0.4+max_std*0.6 
-            # #cfg.model.min_logprob_denoising_std*1.5
+            # min_std*0.20+max_std*0.80
+            # min_std*0.4+max_std*0.6
+            # cfg.model.min_logprob_denoising_std*1.5
             self.max_noise_hold_ratio=cfg.train.get('max_noise_hold_ratio', 0.35)
             self.explore_noise_scheduler = get_scheduler(schedule_type='cosine',
                                                             max=max_std,
@@ -120,7 +114,7 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             plt.close()
             log.info("Exploration noise level bounds saved to %s" % name)
     
-        self.initial_ratio_error_threshold = 1e-6 # for state based tasks, no augmentation, then the logprob ratio should be strictly 1.00 when batch=0 and epoch=0
+        self.initial_ratio_error_threshold = 1e-6 # 对于基于 state 且无数据增强的任务，batch=0、epoch=0 时 logprob ratio 应严格为 1.00。
 
     def init_buffer(self):
         self.buffer = PPOFlowBuffer(
@@ -153,59 +147,78 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             log.info(f"Updated noise_std_range={updated_noise_std_range} (self.model.noise_scheduler_type={self.model.noise_scheduler_type})")   
     
     def run(self):
-        self.init_buffer()
+        self.init_buffer()      # 创建经验池，包含obs, action, reward, done, value, logprob, chains
         self.prepare_run()
-        self.buffer.reset() # as long as we put items at the right position in the buffer (determined by 'step'), the buffer automatically resets when new iteration begins (step =0). so we only need to reset in the beginning. This works only for PPO buffer, otherwise may need to reset when new iter begins.
-        if self.resume:
+        # PPO buffer：首轮前显式 reset；后续按 step 写入时会在新迭代 step=0 处自动重置，故仅此处需一次初始 reset。
+        self.buffer.reset()     # 经验池初始清空
+        if self.resume:            # 恢复训练
             self.resume_training()
-        while self.itr < self.n_train_itr:
-            self.prepare_video_path()
-            self.set_model_mode()
-            self.reset_env() # for gpu version, add device=self.device
-            self.buffer.update_full_obs()
-            for step in range(self.n_steps):
-                
-                with torch.no_grad():
+        while self.itr < self.n_train_itr:  # 循环训练n_train_itr轮
+            self.prepare_video_path()  # 准备视频路径
+            self.set_model_mode()  # 设置 train/eval 模式
+            self.reset_env()    # 重置环境
+            self.buffer.update_full_obs()  # 更新经验池
+            # Rollout：收集 n_steps 条 transition，供本迭代 GAE / PPO 更新使用。
+            for step in range(self.n_steps):    # 一轮 rollout 采样 n_steps
+                with torch.no_grad():   # 不计算梯度
+                    # 当前时刻并行环境里的所有观测，整理成一个 batch，送入模型
                     cond = {
                         "state": torch.tensor(self.prev_obs_venv["state"], device=self.device, dtype=torch.float32)
                     }
-                    value_venv = self.get_value(cond=cond) # for gpu version add , device=self.device
-                    action_samples, chains_venv, logprob_venv = self.get_samples_logprobs(cond=cond, 
-                                                                                          normalize_denoising_horizon=self.normalize_denoising_horizon,
-                                                                                          normalize_act_space_dimension=self.normalize_act_space_dim, 
-                                                                                          clip_intermediate_actions=self.clip_intermediate_actions,
-                                                                                          account_for_initial_stochasticity=self.account_for_initial_stochasticity) # for gpu version, add , device=self.device
+                    # critic 估计状态价值
+                    value_venv = self.get_value(cond=cond)
+
+                    # get_samples_logprobs（内部 model.get_actions）：
+                    # 输入 cond：{"state": Tensor[B, cond_steps, obs_dim]}，B=n_envs，与并行环境 batch 对齐。
+                    # 输出（默认 ret_device=cpu，均为 numpy，便于 mujoco）：
+                    #   action_samples [B, horizon_steps, action_dim] — 去噪终点动作序列；
+                    #   chains_venv      [B, K+1, horizon_steps, action_dim] — 每步 xt，K=inference_steps；
+                    #   logprob_venv     [B] — 每个环境一条轨迹的标量 log p（尺度由下方 bool 控制）。
+                    action_samples, chains_venv, logprob_venv = self.get_samples_logprobs(
+                        cond=cond,
+                        # 以下为 logprob 计算时的尺度与建模选项（定义见 model.get_logprobs）
+                        normalize_denoising_horizon=self.normalize_denoising_horizon,  # True：总 logprob 除以参与累加的步数，减弱推理步数 K 变化带来的量级漂移
+                        normalize_act_space_dimension=self.normalize_act_space_dim,  # True：再除以动作总维数，便于不同 act_dim 间调参
+                        clip_intermediate_actions=self.clip_intermediate_actions,  # True：flow 每步预测均值在送入转移分布前 clamp，抑制中间态发散
+                        account_for_initial_stochasticity=self.account_for_initial_stochasticity,  # True：logprob 含 x0~N(0,I) 初分布项；False 仅转移项
+                    )
                 
-                # Apply multi-step action
-                action_venv = action_samples[:, : self.act_steps]
+                action_venv = action_samples[:, : self.act_steps]   # 截取前 act_steps 步动作，送入环境
+                # 环境步进，获取新观测、奖励、终止信号等
                 obs_venv, reward_venv, terminated_venv, truncated_venv, info_venv = self.venv.step(action_venv)
                 
+                # 保存完整观测信息
                 self.buffer.save_full_obs(info_venv)
+                # 把 rollout 数据写进 buffer
                 self.buffer.add(step, self.prev_obs_venv["state"], chains_venv, reward_venv, terminated_venv, truncated_venv, value_venv, logprob_venv)
                 
-                self.prev_obs_venv = obs_venv
+                self.prev_obs_venv = obs_venv  # 更新上一时刻观测
+                # 训练模式下累计全局步数（环境数 × 每步动作长度）；eval 不计。
                 self.cnt_train_step+= self.n_envs * self.act_steps if not self.eval_mode else 0
-            self.buffer.summarize_episode_reward()
+            self.buffer.summarize_episode_reward()  # 一轮 rollout 完成后的汇总
             
+            # 如果不是 eval，就开始 PPO 更新
             if not self.eval_mode:
-                self.buffer.update(obs_venv, self.model.critic) # for gpu version, add device=self.device
+                # 把 rollout 原始数据加工成 PPO 真正训练用的数据集。
+                self.buffer.update(obs_venv, self.model.critic)
+                # 执行梯度下降
                 self.agent_update(verbose=self.verbose)
             
-            # self.plot_state_trajecories() #(only in D3IL)
-            
-            self.log()                                          # diffusion_min_sampling_std
+            # self.plot_state_trajecories() # 仅 D3IL 使用
+            # 日志、学习率、噪声调度、保存模型
+            self.log()  # diffusion_min_sampling_std 等
             self.update_lr()
-            self.adjust_finetune_schedule()# update finetune scheduler of ReFlow Policy
+            self.adjust_finetune_schedule()  # ReFlow policy 噪声/微调调度
             self.save_model()
             self.itr += 1 
             
     def adjust_finetune_schedule(self):
-        # constant noise levels in intermediate steps, but the level changes over the course of training
+        # 中间步噪声在单次 rollout 内固定，但会随训练进程变化
         if self.model.noise_scheduler_type == 'const_schedule_itr':
             explore_noise_std = self.explore_noise_scheduler(self.itr)
             self.model.actor_ft.set_logprob_noise_levels(force_level=explore_noise_std)
         
-        # gradually decrease the noise upper bound, to prevent noisy samples from hurting the model. 
+        # 逐步降低噪声上界，避免高噪声样本伤害模型。
         if self.model.noise_scheduler_type == 'learn_decay':
             updated_noise_std_range=[
                 self.model.actor_ft.min_logprob_denoising_std, 
@@ -214,16 +227,16 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             self.model.actor_ft.explore_noise_net.set_noise_range(updated_noise_std_range)
             log.info(f"Updated noise_std_range={updated_noise_std_range} (self.model.noise_scheduler_type={self.model.noise_scheduler_type})")
         
-    # overload...
+    # 重载...
     def save_model(self, only_save_policy_network=False):
         """
-        saves model to disk; no ema recorded because we are doing RLFT.
-        for evaluation purpose, set ``only_save_policy`` to True. This option does not save critic and exploration noise network and saves space. 
-        for further training, set ``only_save_policy`` to False. This option saves everything needed to resume training. 
+        将模型保存到磁盘；由于进行的是 RLFT，因此不记录 EMA。
+        评估场景可将 ``only_save_policy`` 设为 True。此时不保存 critic 和探索噪声网络，更省空间。
+        继续训练场景可将 ``only_save_policy`` 设为 False。此时会保存恢复训练所需的全部内容。
         """
         policy_network_state_dict = {
             'network.'+key:value for key, value in self.model.actor_ft.policy.state_dict().items()
-        } # this is a FlowMLP network that can be loaded to the .network attribute of a ReFlow object. 
+        } # 这是一个 FlowMLP 网络，可加载到 ReFlow 对象的 .network 属性。
         
         if only_save_policy_network:
             data = {
@@ -239,25 +252,25 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             data = {
                 "itr": self.itr,
                 "cnt_train_steps": self.cnt_train_step,
-                "model": self.model.state_dict(),  # for resume training
-                "policy": policy_network_state_dict,  # flow policy for evaluation, without critic and exploration noise nets
+                "model": self.model.state_dict(),  # 用于恢复训练
+                "policy": policy_network_state_dict,  # 用于评估的 flow policy，不含 critic 和探索噪声网络
                 "actor_optimizer": self.actor_optimizer.state_dict(),
                 "critic_optimizer": self.critic_optimizer.state_dict(),
                 "actor_lr_scheduler": self.actor_lr_scheduler.state_dict(),
                 "critic_lr_scheduler": self.critic_lr_scheduler.state_dict(),
             }
         
-        # always save the last model for resume of training. 
+        # 始终保存 last 模型，便于恢复训练。
         save_path = os.path.join(self.checkpoint_dir,f"last.pt")
         torch.save(data, os.path.join(self.checkpoint_dir, save_path))
         
-        # optionally save intermediate models
+        # 按需保存中间模型
         if self.itr % self.save_model_freq == 0 or self.itr == self.n_train_itr - 1:
             save_path = os.path.join(self.checkpoint_dir, f"state_{self.itr}.pt")
             torch.save(data, os.path.join(self.checkpoint_dir, save_path))
             log.info(f"\n Saved model at itr={self.itr} to {save_path}\n ")
         
-        # save the best model evaluated so far 
+        # 保存截至当前评估最优模型
         if self.is_best_so_far:
             save_path = os.path.join(self.checkpoint_dir,f"best.pt")
             torch.save(data, os.path.join(self.checkpoint_dir, save_path))
@@ -273,7 +286,7 @@ class TrainPPOFlowAgent(TrainPPOAgent):
                              normalize_act_space_dimension=False, 
                              clip_intermediate_actions=True,
                              account_for_initial_stochasticity=True):
-        # returns: action_samples are still numpy because mujoco engine receives np.
+        # 返回说明：action_samples 仍为 numpy，因为 mujoco 引擎接收 np。
         if save_chains:
             action_samples, chains_venv, logprob_venv  = self.model.get_actions(cond, 
                                                                                 eval_mode=self.eval_mode, 
@@ -281,7 +294,7 @@ class TrainPPOFlowAgent(TrainPPOAgent):
                                                                                 normalize_denoising_horizon=normalize_denoising_horizon, 
                                                                                 normalize_act_space_dimension=normalize_act_space_dimension, 
                                                                                 clip_intermediate_actions=clip_intermediate_actions,
-                                                                                account_for_initial_stochasticity=account_for_initial_stochasticity)        # n_envs , horizon_steps , act_dim
+                                                                                account_for_initial_stochasticity=account_for_initial_stochasticity)        # [n_envs, horizon_steps, act_dim]
             return action_samples.cpu().numpy(), chains_venv.cpu().numpy() if ret_device=='cpu' else chains_venv, logprob_venv.cpu().numpy()  if ret_device=='cpu' else logprob_venv
         else:
             action_samples, logprob_venv  = self.model.get_actions(cond, 
@@ -294,18 +307,18 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             return action_samples.cpu().numpy(), logprob_venv.cpu().numpy()  if ret_device=='cpu' else logprob_venv
     
     def get_value(self, cond:dict, device='cpu'):
-        # cond contains a floating-point torch.tensor on self.device
+        # cond 包含位于 self.device 上的浮点 torch.tensor
         if device == 'cpu':
             value_venv = self.model.critic.forward(cond).cpu().numpy().flatten()
         else:
             value_venv = self.model.critic.forward(cond).squeeze().float().to(self.device)
         return value_venv
     
-    # overload
+    # 重载
     def update_lr(self, val_metric=None):
-        if self.target_kl and self.lr_schedule == 'adaptive_kl':   # adapt learning rate according to kl divergence on each minibatch.
+        if self.target_kl and self.lr_schedule == 'adaptive_kl':   # 按每个 minibatch 的 KL 散度自适应调整学习率。
             return
-        else: # use predefined lr scheduler. 
+        else: # 使用预定义学习率调度器。
             super().update_lr()
     
     def update_lr_adaptive_kl(self, approx_kl):
@@ -331,7 +344,7 @@ class TrainPPOFlowAgent(TrainPPOAgent):
         self.approx_kl = 0.0
         
         obs, chains, returns, oldvalues, advantages, oldlogprobs =  self.buffer.make_dataset()
-        # Explained variation of future rewards using value function
+        # 使用价值函数解释未来回报方差
         self.explained_var = self.buffer.get_explained_var(oldvalues, returns)
         
         self.total_steps = self.n_steps * self.n_envs
@@ -351,7 +364,7 @@ class TrainPPOFlowAgent(TrainPPOAgent):
                     advantages[inds_b],
                     oldlogprobs[inds_b] 
                 )
-                if self.lr_schedule=='fixed' and self.target_kl and self.approx_kl > self.target_kl: # we can also use adaptive KL instead of early stopping.
+                if self.lr_schedule=='fixed' and self.target_kl and self.approx_kl > self.target_kl: # 也可用 adaptive KL 代替提前停止。
                     self.kl_change_too_much = True
                     log.warning(f"KL change too much, approx_kl ={self.approx_kl} > {self.target_kl} = target_kl, stop optimization.")
                     break
@@ -362,10 +375,10 @@ class TrainPPOFlowAgent(TrainPPOAgent):
         self.approx_kl = 0.0
         
         obs, chains, returns, oldvalues, advantages, oldlogprobs =  self.buffer.make_dataset()
-        # Explained variation of future rewards using value function
+        # 使用价值函数解释未来回报方差
         self.explained_var = self.buffer.get_explained_var(oldvalues, returns)
         
-        duplicate_multiplier = 10   #self.ft_denoising_steps of PPO diffusion. this is added to strictly align with the batchsize of PPODiffusion.
+        duplicate_multiplier = 10   # PPO diffusion 的 self.ft_denoising_steps。此设置用于严格对齐 PPODiffusion 的 batchsize。
         
         self.total_steps = self.n_steps * self.n_envs *  duplicate_multiplier
         
@@ -389,7 +402,7 @@ class TrainPPOFlowAgent(TrainPPOAgent):
                     advantages[batch_inds_b],
                     oldlogprobs[batch_inds_b] 
                 )
-                if self.lr_schedule=='fixed' and self.target_kl and self.approx_kl > self.target_kl: # we can also use adaptive KL instead of early stopping.
+                if self.lr_schedule=='fixed' and self.target_kl and self.approx_kl > self.target_kl: # 也可用 adaptive KL 代替提前停止。
                     self.kl_change_too_much = True
                     log.warning(f"KL change too much, approx_kl ={self.approx_kl} > {self.target_kl} = target_kl, stop optimization.")
                     break
@@ -401,10 +414,10 @@ class TrainPPOFlowAgent(TrainPPOAgent):
         noise_std_list = []
         for update_epoch, batch_id, minibatch in self.minibatch_generator() if not self.repeat_samples else self.minibatch_generator_repeat():
 
-            # minibatch gradient descent
+            # minibatch 梯度下降
             self.model: PPOFlow
             
-            # print(f"minibatch contains {minibatch[0]['state'].shape}. self.n_envs={self.n_envs}")
+            # print(f"minibatch 的形状: {minibatch[0]['state'].shape}. self.n_envs={self.n_envs}")
             pg_loss, entropy_loss, v_loss, bc_loss, \
             clipfrac, approx_kl, ratio, \
             oldlogprob_min, oldlogprob_max, oldlogprob_std, \
@@ -431,25 +444,25 @@ class TrainPPOFlowAgent(TrainPPOAgent):
             clipfracs_list += [clipfrac]
             noise_std_list += [noise_std]
             
-            # update policy and critic
+            # 更新策略和 critic
             self.actor_optimizer.zero_grad()
             self.critic_optimizer.zero_grad()
             
             loss.backward()
             
-            # debug the losses
+            # 调试损失项
             actor_norm = torch.nn.utils.clip_grad_norm_(self.model.actor_ft.parameters(), max_norm=float('inf'))
             actor_old_norm = torch.nn.utils.clip_grad_norm_(self.model.actor_old.parameters(), max_norm=float('inf'))
             critic_norm = torch.nn.utils.clip_grad_norm_(self.model.critic.parameters(), max_norm=float('inf'))
             if verbose:
                 log.info(f"before clipping: actor_norm={actor_norm:.2e}, critic_norm={critic_norm:.2e}, actor_old_norm={actor_old_norm:.2e}")
             
-            # always and frequently update critic
+            # 始终高频更新 critic
             if self.max_grad_norm:
                 torch.nn.utils.clip_grad_norm_(self.model.critic.parameters(), self.max_grad_norm)
             self.critic_optimizer.step()
             
-            # after critic warmup to make the value estimate a reasonable value, update the actor less frequently but more times. 
+            # critic 预热后，为保证价值估计稳定，actor 低频但多次更新。
             if self.itr >= self.n_critic_warmup_itr:
                 if (self.itr-self.n_critic_warmup_itr) % self.actor_update_freq ==0:
                     for _ in range(self.actor_update_epoch):
